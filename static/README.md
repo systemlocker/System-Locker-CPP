@@ -8,8 +8,8 @@ Windows.
 ```text
 include/syslocker/*.hpp   public headers
 lib/syslocker.lib         SystemLocker static library
-lib/libcurl.lib           libcurl import library
-bin/*.dll                 libcurl runtime DLL set
+lib/libcurl.lib           custom static libcurl build
+COPYING-curl.txt          libcurl license
 ```
 
 `syslocker` itself is already built into `syslocker.lib`.
@@ -21,8 +21,7 @@ After extracting or copying this `static/` folder somewhere on disk:
 1. Set your project to C++20.
 2. Add `static/include/` to C/C++ -> General -> Additional Include Directories.
 3. Add `static/lib/` to Linker -> General -> Additional Library Directories.
-4. Add `syslocker.lib;libcurl.lib;ws2_32.lib` to Linker -> Input -> Additional Dependencies.
-5. Copy every DLL from `static/bin/` beside your final `.exe`.
+4. Add `syslocker.lib;libcurl.lib;bcrypt.lib;advapi32.lib;crypt32.lib;secur32.lib;ws2_32.lib;iphlpapi.lib` to Linker -> Input -> Additional Dependencies.
 
 ## Minimal code
 
@@ -66,27 +65,3 @@ int main()
 - Build your application as the same architecture as this package, typically
   `x64`.
 - `ws2_32.lib` is supplied by the Windows SDK. Do not redistribute it.
-- The complete curl runtime set from `static/bin/` must be deployed beside your
-  application at runtime unless you switch to a statically linked curl build.
-- If your curl build depends on additional DLLs, ship those too.
-
-## Refreshing this package
-
-Maintainers can rebuild and restage this folder from the main repository with:
-
-```powershell
-./package-publish.ps1
-```
-
-If `cmake` is not on `PATH` on the current machine, pass the directory that
-contains `cmake.exe`:
-
-```powershell
-./package-publish.ps1 -CMakeBinDir "C:\Program Files\CMake\bin"
-```
-
-If the library is already built and you only want to refresh the staged files:
-
-```powershell
-./package-publish.ps1 -SkipBuild
-```
