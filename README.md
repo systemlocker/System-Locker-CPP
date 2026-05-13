@@ -20,7 +20,7 @@ Visual Studio project and build them as part of your app.
 static/                  prebuilt package for Visual Studio consumers
 include/syslocker/       public headers for source integration
 src/                     implementation files for source integration
-third_party/curl/        bundled curl headers and runtime/import library
+third_party/curl/        bundled custom curl headers, static library, and license
 ```
 
 ## Option 1: Prebuilt static package
@@ -35,7 +35,7 @@ static/
   include/syslocker/*.hpp
   lib/syslocker.lib
   lib/libcurl.lib
-  bin/*.dll
+  COPYING-curl.txt
 ```
 
 Setup instructions are in `static/README.md`.
@@ -54,7 +54,7 @@ include/syslocker/
 src/
 third_party/curl/include/curl/
 third_party/curl/lib/libcurl.lib
-third_party/curl/bin/*.dll
+third_party/curl/COPYING
 ```
 
 ### Visual Studio setup
@@ -65,8 +65,7 @@ third_party/curl/bin/*.dll
 4. Add `include/` to C/C++ -> General -> Additional Include Directories.
 5. Add `third_party/curl/include/` to C/C++ -> General -> Additional Include Directories.
 6. Add `third_party/curl/lib/` to Linker -> General -> Additional Library Directories.
-7. Add `libcurl.lib;ws2_32.lib` to Linker -> Input -> Additional Dependencies.
-8. Copy every DLL from `third_party/curl/bin/` beside your final `.exe`.
+7. Add `libcurl.lib;bcrypt.lib;advapi32.lib;crypt32.lib;secur32.lib;ws2_32.lib;iphlpapi.lib` to Linker -> Input -> Additional Dependencies.
 
 ### Files that must be compiled
 
@@ -99,9 +98,8 @@ In your application code, include:
 - `ws2_32.lib` comes from the Windows SDK and should not be redistributed.
 - Build your app, libcurl, and SystemLocker for the same architecture,
   typically `x64`.
-- Keep the complete curl runtime set in `third_party/curl/bin/`; if your
-  libcurl build depends on `z.dll`, OpenSSL DLLs, or Brotli DLLs, ship those
-  beside your app too.
+- The bundled curl build is static and does not require `z.dll`, `libcurl.dll`,
+  or any other third-party runtime DLLs.
 
 ## Which option should you choose?
 
@@ -146,26 +144,4 @@ int main()
 
     return 0;
 }
-```
-
-## Release notes for maintainers
-
-When updating this publish repo for a new release:
-
-1. Run `../package-publish.ps1` from this folder, or run `./package-publish.ps1` from the main repository root.
-2. If this machine needs a custom CMake location, pass `-CMakeBinDir "C:\path\to\cmake\bin"`.
-3. Commit the refreshed `publish/` contents to the public repository.
-4. Include the correct libcurl license/notice files before publishing a release.
-
-Example:
-
-```powershell
-./package-publish.ps1 -CMakeBinDir "C:\Program Files\CMake\bin"
-```
-
-If you already have a valid `build/Release/syslocker.lib` and only want to
-restage the publish tree, use:
-
-```powershell
-./package-publish.ps1 -SkipBuild
 ```
