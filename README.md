@@ -1,5 +1,7 @@
 # SystemLocker C++ Implementation
 
+![System Locker Logo](logo.png)
+
 Welcome to the System Locker C++ Reference implementation, written in C++20.
 
 It supports two ways to integrate the library into a Visual Studio project:
@@ -98,8 +100,6 @@ In your application code, include:
 - `ws2_32.lib` comes from the Windows SDK and should not be redistributed.
 - Build your app, libcurl, and SystemLocker for the same architecture,
   typically `x64`.
-- The bundled curl build is static and does not require `z.dll`, `libcurl.dll`,
-  or any other third-party runtime DLLs.
 
 ## Which option should you choose?
 
