@@ -94,16 +94,30 @@ namespace syslocker
         : Client(cfg, makeCurlHttpClient(optionsFrom(cfg))) {}
 
     Client::Client(Config cfg, std::unique_ptr<IHttpClient> http)
-        : cfg_(std::move(cfg)), http_(std::move(http)), variables_(std::make_unique<Variables>(*http_, cfg_.baseUrl, cfg_.systemId)), management_(std::make_unique<Management>(*http_, cfg_.baseUrl, cfg_.apiKey)) {}
+        : cfg_(std::move(cfg)),
+          http_(std::move(http)),
+          variables_(std::make_unique<Variables>(*http_, cfg_.baseUrl, cfg_.systemId)),
+          management_(std::make_unique<Management>(*http_, cfg_.baseUrl, cfg_.apiKey)),
+          invisibleFolder_(std::make_unique<InvisibleFolder>(
+              *http_, cfg_.baseUrl, cfg_.invisibleFolderBaseUrl, cfg_.systemId, cfg_.hwid,
+              [this]
+              { return isAuthenticated(); }))
+    {
+    }
 
     Client::~Client() { shutdown(); }
 
     void Client::onHeartbeatFailure(HeartbeatFailureHook hook)
     {
+        pendingHook_ = hook;
         if (session_)
-            session_->onFailure(std::move(hook));
-        else
-            pendingHook_ = std::move(hook);
+        {
+            session_->onFailure([this, hook = std::move(hook)](const HeartbeatFailure &failure)
+                                {
+                                    invisibleFolder_->clearSessionState();
+                                    if (hook)
+                                        hook(failure); });
+        }
     }
 
     bool Client::isAuthenticated() const noexcept
@@ -131,10 +145,12 @@ namespace syslocker
         if (session_)
             session_->stop();
         session_.reset();
+        invisibleFolder_->clearSessionState();
     }
 
     Variables &Client::variables() { return *variables_; }
     Management &Client::management() { return *management_; }
+    InvisibleFolder &Client::invisibleFolder() { return *invisibleFolder_; }
 
     Result<InitSuccess> Client::doInit(std::string_view path, std::string identifier, const FormFields &fields)
     {
@@ -245,11 +261,11 @@ namespace syslocker
                 *http_, cfg_.baseUrl, cfg_.systemId, cfg_.beatRate,
                 s.token, s.username, cfg_.enableAntiDebug,
                 std::move(integritySha1), integritySize);
-            if (pendingHook_)
-            {
-                session_->onFailure(std::move(pendingHook_));
-                pendingHook_ = nullptr;
-            }
+            session_->onFailure([this, hook = pendingHook_](const HeartbeatFailure &failure)
+                                {
+                                    invisibleFolder_->clearSessionState();
+                                    if (hook)
+                                        hook(failure); });
             return s;
         }
 
@@ -257,7 +273,8 @@ namespace syslocker
     }
 
     Result<InitSuccess> Client::authenticateWithPassword(std::string_view username,
-                                                         std::string_view password)
+                                                         std::string_view password,
+                                                         AuthenticationOptions options)
     {
         FormFields fields = {
             {"username", std::string(username)},
@@ -267,10 +284,19 @@ namespace syslocker
             {"version", cfg_.version},
             {"beatrate", std::to_string(cfg_.beatRate.count())},
         };
-        return doInit(kInitPath, std::string(username), fields);
+        auto r = doInit(kInitPath, std::string(username), fields);
+        if (!r.ok())
+            return r;
+
+        invisibleFolder_->clearSessionState();
+        invisibleFolder_->setPasswordAuth(username, password);
+        if (options.prefetchInvisibleFolderToken)
+            (void)invisibleFolder_->ensureToken();
+        return r;
     }
 
-    Result<InitSuccess> Client::authenticateWithKey(std::string_view licenseKey)
+    Result<InitSuccess> Client::authenticateWithKey(std::string_view licenseKey,
+                                                    AuthenticationOptions options)
     {
         FormFields fields = {
             {"key", std::string(licenseKey)},
@@ -279,7 +305,15 @@ namespace syslocker
             {"version", cfg_.version},
             {"beatrate", std::to_string(cfg_.beatRate.count())},
         };
-        return doInit(kInitMikrosPath, std::string(licenseKey), fields);
+        auto r = doInit(kInitMikrosPath, std::string(licenseKey), fields);
+        if (!r.ok())
+            return r;
+
+        invisibleFolder_->clearSessionState();
+        invisibleFolder_->setKeyAuth(licenseKey);
+        if (options.prefetchInvisibleFolderToken)
+            (void)invisibleFolder_->ensureToken();
+        return r;
     }
 
 } // namespace syslocker

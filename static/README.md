@@ -29,6 +29,11 @@ After extracting or copying this `static/` folder somewhere on disk:
 #include <syslocker/syslocker.hpp>
 ```
 
+Invisible Folder Advanced downloads are available through
+`Client::invisibleFolder()`. Startup token prefetch is best-effort and silent;
+downloads request a token on demand when needed, and a server-rejected cached
+token is refreshed and retried once per download call.
+
 ## Example
 
 ```cpp

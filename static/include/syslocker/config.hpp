@@ -53,6 +53,11 @@ namespace syslocker
         /// Useful for testing against staging environments. Plain http:// is
         /// rejected unless you also disable strict TLS via a custom HTTP client.
         std::string baseUrl = "https://systemlocker.net";
+
+        /// Override the Invisible Folder download base URL. Token init still
+        /// uses `baseUrl`; this value is only for `/a/{reference_id}`
+        /// downloads.
+        std::string invisibleFolderBaseUrl = "https://invisiblefolder.net";
     };
 
 } // namespace syslocker

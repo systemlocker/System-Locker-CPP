@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "errors.hpp"
 #include "http.hpp"
+#include "invisiblefolder.hpp"
 #include "management.hpp"
 #include "quicksilver.hpp"
 #include "result.hpp"
@@ -14,6 +15,11 @@
 
 namespace syslocker
 {
+
+    struct AuthenticationOptions
+    {
+        bool prefetchInvisibleFolderToken = false;
+    };
 
     /// The single stateful entry point for the library. One Client per system
     /// and per authenticated user. Construct, then call exactly one of the
@@ -45,10 +51,12 @@ namespace syslocker
 
         /// Username + password Quicksilver flow (POST /auth/quicksilver/init).
         Result<InitSuccess> authenticateWithPassword(std::string_view username,
-                                                     std::string_view password);
+                                                     std::string_view password,
+                                                     AuthenticationOptions options = {});
 
         /// Key-only Quicksilver flow (POST /quicksilver/init).
-        Result<InitSuccess> authenticateWithKey(std::string_view licenseKey);
+        Result<InitSuccess> authenticateWithKey(std::string_view licenseKey,
+                                                AuthenticationOptions options = {});
 
         /// True iff a heartbeat session has been established and no failure
         /// has been recorded since.
@@ -76,13 +84,19 @@ namespace syslocker
         /// Direct access to the management sub-API. Requires Config::apiKey.
         Management &management();
 
+        /// Direct access to authenticated Invisible Folder downloads.
+        InvisibleFolder &invisibleFolder();
+
     private:
-        Result<InitSuccess> doInit(std::string_view path, std::string identifier, const FormFields &fields);
+        Result<InitSuccess> doInit(std::string_view path,
+                                   std::string identifier,
+                                   const FormFields &fields);
 
         Config cfg_;
         std::unique_ptr<IHttpClient> http_;
         std::unique_ptr<Variables> variables_;
         std::unique_ptr<Management> management_;
+        std::unique_ptr<InvisibleFolder> invisibleFolder_;
         std::unique_ptr<QuicksilverSession> session_;
         HeartbeatFailureHook pendingHook_;
     };
