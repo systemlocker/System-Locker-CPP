@@ -5,6 +5,7 @@
 #include "config.hpp"
 #include "errors.hpp"
 #include "http.hpp"
+#include "invisiblefolder.hpp"
 #include "management.hpp"
 #include "quicksilver.hpp"
 #include "result.hpp"

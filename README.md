@@ -78,6 +78,7 @@ client.cpp
 curl_http.cpp
 errors.cpp
 integrity.cpp
+invisiblefolder.cpp
 management.cpp
 quicksilver.cpp
 security.cpp
@@ -85,6 +86,11 @@ sha1.cpp
 util.cpp
 variables.cpp
 ```
+
+Invisible Folder Advanced downloads are included in the public API through
+`Client::invisibleFolder()`. Startup token prefetch is best-effort and silent;
+downloads request a token on demand when needed, and a server-rejected cached
+token is refreshed and retried once per download call.
 
 ### Minimal include
 
@@ -141,6 +147,29 @@ int main()
         std::cerr << result.error() << '\n';
         return 1;
     }
+
+    // // // // // // // // // // // // // // // // // // // // // //
+    // Optional: download files from Invisible Folder
+    // Invisible Folder storage is included with all subscriptions
+    // Link your account at https://systemlocker.net/devs/account
+
+    // Save to a file
+    auto saved = client.invisibleFolder().downloadToFile(*reference, destination);
+
+    if (!saved)
+    {
+        std::cerr << "[if] download error  : " << saved.error() << '\n';
+        return 1;
+    }
+
+    // Or, keep it in memory:
+    auto bytes = client.invisibleFolder().download(*reference);
+    if (!bytes)
+    {
+        std::cerr << "[if] download error  : " << bytes.error() << '\n';
+        return 1;
+    }
+    std::cout << "[if] downloaded bytes: " << bytes->size() << '\n';
 
     return 0;
 }
