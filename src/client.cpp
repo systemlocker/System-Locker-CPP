@@ -20,7 +20,8 @@ namespace syslocker
         constexpr const char *kInitPath = "/auth/quicksilver/init";
         constexpr const char *kInitMikrosPath = "/auth/quicksilver/init";
 
-        constexpr std::int64_t kEpochBucket = 29;
+        // Quicksilver protocol time bucket: floor(unix_time / 29).
+        constexpr std::int64_t kEpochBucketSeconds = 29;
 
         bool validBeatRate(std::chrono::seconds s) noexcept
         {
@@ -30,7 +31,8 @@ namespace syslocker
         std::int64_t bucketedNow()
         {
             using namespace std::chrono;
-            return duration_cast<seconds>(system_clock::now().time_since_epoch()).count() / kEpochBucket;
+            const auto secondsSinceEpoch = duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+            return static_cast<std::int64_t>(secondsSinceEpoch / kEpochBucketSeconds);
         }
 
         bool eqIgnoreCase(std::string_view a, std::string_view b)
@@ -245,13 +247,15 @@ namespace syslocker
             // can detect runtime patching (e.g. WriteProcessMemory).
             std::string integritySha1;
             std::size_t integritySize = 0;
+            std::size_t integritySegmentCount = 0;
             {
                 detail::IntegrityBaseline bl;
                 std::string integrityError;
-                if (detail::integrity_capture(bl, integrityError))
+                if (detail::integrityCapture(bl, integrityError))
                 {
                     integritySha1 = std::move(bl.sha1Hex);
                     integritySize = bl.codeSize;
+                    integritySegmentCount = bl.segmentCount;
                 }
                 // If capture fails (unsupported platform), we proceed
                 // without integrity checks rather than blocking auth.
@@ -260,7 +264,7 @@ namespace syslocker
             session_ = std::make_unique<QuicksilverSession>(
                 *http_, cfg_.baseUrl, cfg_.systemId, cfg_.beatRate,
                 s.token, s.username, cfg_.enableAntiDebug,
-                std::move(integritySha1), integritySize);
+                std::move(integritySha1), integritySize, integritySegmentCount);
             session_->onFailure([this, hook = pendingHook_](const HeartbeatFailure &failure)
                                 {
                                     invisibleFolder_->clearSessionState();

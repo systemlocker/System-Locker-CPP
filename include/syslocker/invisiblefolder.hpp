@@ -78,6 +78,10 @@ namespace syslocker
         std::chrono::system_clock::time_point tokenExpiresAtTime_{};
         bool hasTokenExpiry_ = false;
         bool refreshInFlight_ = false;
+        std::uint64_t refreshGeneration_ = 0;
+        std::uint64_t lastRefreshGeneration_ = 0;
+        bool lastRefreshSucceeded_ = true;
+        std::string lastRefreshError_;
         std::uint64_t stateVersion_ = 0;
         std::condition_variable stateCv_;
     };

@@ -6,6 +6,7 @@
 #include "util.hpp"
 
 #include <chrono>
+#include <cstdlib>
 
 namespace syslocker
 {
@@ -14,6 +15,7 @@ namespace syslocker
     {
 
         constexpr const char *kBeatPath = "/auth/quicksilver/beat";
+        constexpr auto kClockJumpTolerance = std::chrono::seconds(2);
 
     } // namespace
 
@@ -25,11 +27,22 @@ namespace syslocker
                                            std::string username,
                                            bool enableAntiDebug,
                                            std::string integrityBaselineSha1,
-                                           std::size_t integrityCodeSize)
-        : http_(http), baseUrl_(std::move(baseUrl)), systemId_(std::move(systemId)), beatRate_(beatRate), username_(std::move(username)), antiDebug_(enableAntiDebug), token_(std::move(initialToken)), integrityBaseline_(std::move(integrityBaselineSha1)), integrityCodeSize_(integrityCodeSize)
+                                           std::size_t integrityCodeSize,
+                                           std::size_t integritySegmentCount)
+        : http_(http), baseUrl_(std::move(baseUrl)), systemId_(std::move(systemId)), beatRate_(beatRate), username_(std::move(username)), antiDebug_(enableAntiDebug), token_(std::move(initialToken)), integrityBaseline_(std::move(integrityBaselineSha1)), integrityCodeSize_(integrityCodeSize), integritySegmentCount_(integritySegmentCount)
     {
         thread_ = std::thread([this]
-                              { run(); });
+                              {
+                                  try
+                                  {
+                                      run();
+                                  }
+                                  catch (...)
+                                  {
+                                      fail(HeartbeatFailureCode::TamperDetected,
+                                           BeatError::TamperDetected,
+                                           "heartbeat thread exception");
+                                  } });
     }
 
     QuicksilverSession::~QuicksilverSession()
@@ -86,6 +99,9 @@ namespace syslocker
 
     void QuicksilverSession::run()
     {
+        auto previousSteady = std::chrono::steady_clock::now();
+        auto previousSystem = std::chrono::system_clock::now();
+
         while (true)
         {
             {
@@ -95,6 +111,28 @@ namespace syslocker
             }
             if (stop_.load(std::memory_order_acquire))
                 return;
+
+            // Compare wall-clock passage against monotonic passage. Any
+            // backward jump or large skew indicates local clock tampering.
+            const auto currentSteady = std::chrono::steady_clock::now();
+            const auto currentSystem = std::chrono::system_clock::now();
+            const auto steadyElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             currentSteady - previousSteady)
+                                             .count();
+            const auto systemElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             currentSystem - previousSystem)
+                                             .count();
+            const auto driftMs = systemElapsedMs - steadyElapsedMs;
+            const auto toleranceMs = std::chrono::duration_cast<std::chrono::milliseconds>(kClockJumpTolerance).count();
+            if (systemElapsedMs < 0 || std::llabs(driftMs) > toleranceMs)
+            {
+                fail(HeartbeatFailureCode::TamperDetected,
+                     BeatError::TamperDetected,
+                     "system clock jump detected (possible tamper)");
+                return;
+            }
+            previousSteady = currentSteady;
+            previousSystem = currentSystem;
 
             if (antiDebug_)
             {
@@ -118,8 +156,9 @@ namespace syslocker
                 detail::IntegrityBaseline bl;
                 bl.sha1Hex = integrityBaseline_;
                 bl.codeSize = integrityCodeSize_;
+                bl.segmentCount = integritySegmentCount_;
                 std::string integrityError;
-                if (!detail::integrity_verify(bl, integrityError))
+                if (!detail::integrityVerify(bl, integrityError))
                 {
                     fail(HeartbeatFailureCode::TamperDetected,
                          BeatError::TamperDetected,

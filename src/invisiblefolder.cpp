@@ -278,13 +278,13 @@ namespace syslocker
                                      std::string systemLockerBaseUrl,
                                      std::string invisibleFolderBaseUrl,
                                      std::string systemId,
-                             std::string hwid,
+                                     std::string hwid,
                                      std::function<bool()> sessionActive)
         : http_(http),
           systemLockerBaseUrl_(std::move(systemLockerBaseUrl)),
           invisibleFolderBaseUrl_(std::move(invisibleFolderBaseUrl)),
           systemId_(std::move(systemId)),
-            hwid_(std::move(hwid)),
+          hwid_(std::move(hwid)),
           sessionActive_(std::move(sessionActive))
     {
     }
@@ -309,6 +309,7 @@ namespace syslocker
             std::string password;
             std::string licenseKey;
             std::uint64_t stateVersion = 0;
+            std::uint64_t refreshGeneration = 0;
 
             ~RefreshSnapshot()
             {
@@ -338,12 +339,19 @@ namespace syslocker
             }
         };
 
-        auto finalizeRefreshFailure = [this](std::uint64_t expectedVersion, std::string message) -> Result<void>
+        auto finalizeRefreshFailure = [this](std::uint64_t expectedVersion,
+                                             std::uint64_t expectedRefreshGeneration,
+                                             std::string message) -> Result<void>
         {
             {
                 std::lock_guard<std::mutex> lk(stateMtx_);
-                if (stateVersion_ == expectedVersion)
+                if (stateVersion_ == expectedVersion && refreshGeneration_ == expectedRefreshGeneration)
+                {
                     refreshInFlight_ = false;
+                    lastRefreshGeneration_ = expectedRefreshGeneration;
+                    lastRefreshSucceeded_ = false;
+                    lastRefreshError_ = message;
+                }
             }
             stateCv_.notify_all();
             return Result<void>::fail(std::move(message));
@@ -362,10 +370,25 @@ namespace syslocker
 
                 if (refreshInFlight_)
                 {
+                    const auto observedRefreshGeneration = refreshGeneration_;
                     stateCv_.wait(lk, [this]
                                   { return !refreshInFlight_; });
                     if (!sessionActive_ || !sessionActive_())
                         return Result<void>::fail("client is not authenticated");
+
+                    if (!token_.empty() && hasTokenExpiry_ &&
+                        std::chrono::system_clock::now() + kExpiryBuffer < tokenExpiresAtTime_)
+                    {
+                        return Result<void>{};
+                    }
+
+                    if (lastRefreshGeneration_ == observedRefreshGeneration && !lastRefreshSucceeded_)
+                    {
+                        const std::string msg = lastRefreshError_.empty()
+                                                    ? std::string("Invisible Folder token refresh failed")
+                                                    : lastRefreshError_;
+                        return Result<void>::fail(msg);
+                    }
                     continue;
                 }
 
@@ -391,6 +414,7 @@ namespace syslocker
                 }
 
                 refreshInFlight_ = true;
+                snapshot.refreshGeneration = ++refreshGeneration_;
                 break;
             }
         }
@@ -412,13 +436,16 @@ namespace syslocker
         }
 
         if (!sessionActive_ || !sessionActive_())
-            return finalizeRefreshFailure(snapshot.stateVersion, "client is not authenticated");
+            return finalizeRefreshFailure(snapshot.stateVersion,
+                                          snapshot.refreshGeneration,
+                                          "client is not authenticated");
 
         const auto resp = http_.post(systemLockerBaseUrl_ + kInitIfPath, form);
         if (!resp.ok())
         {
             return finalizeRefreshFailure(
                 snapshot.stateVersion,
+                snapshot.refreshGeneration,
                 resp.error.empty() ? ("http " + std::to_string(resp.status)) : resp.error);
         }
 
@@ -428,41 +455,66 @@ namespace syslocker
         {
             if (body.find(':') != std::string::npos)
                 return finalizeRefreshFailure(snapshot.stateVersion,
+                                              snapshot.refreshGeneration,
                                               "Invisible Folder token response failed sha1 integrity check");
             return finalizeRefreshFailure(snapshot.stateVersion,
+                                          snapshot.refreshGeneration,
                                           "Invisible Folder token response was not wrapped");
         }
         if (wrapped.fields.size() != 5)
             return finalizeRefreshFailure(snapshot.stateVersion,
+                                          snapshot.refreshGeneration,
                                           "Invisible Folder token response had an unexpected field count");
         if (!eqIgnoreCase(wrapped.fields[2], systemId_))
             return finalizeRefreshFailure(snapshot.stateVersion,
+                                          snapshot.refreshGeneration,
                                           "Invisible Folder token response returned a different system id");
         if (!expectedIdentity.empty() && !eqIgnoreCase(wrapped.fields[3], expectedIdentity))
             return finalizeRefreshFailure(snapshot.stateVersion,
+                                          snapshot.refreshGeneration,
                                           "Invisible Folder token response returned a different identity than requested");
 
         const auto expiresAt = parseUtcTimestamp(wrapped.fields[1]);
         if (!expiresAt)
             return finalizeRefreshFailure(snapshot.stateVersion,
+                                          snapshot.refreshGeneration,
                                           "Invisible Folder token response had an invalid expires_at timestamp");
 
+        bool completed = false;
+        bool authLost = false;
         {
             std::lock_guard<std::mutex> lk(stateMtx_);
-            if (stateVersion_ != snapshot.stateVersion || !sessionActive_ || !sessionActive_())
+            if (stateVersion_ != snapshot.stateVersion ||
+                refreshGeneration_ != snapshot.refreshGeneration ||
+                !sessionActive_ || !sessionActive_())
             {
-                refreshInFlight_ = false;
-                stateCv_.notify_all();
-                return Result<void>::fail("client is not authenticated");
+                if (refreshGeneration_ == snapshot.refreshGeneration)
+                {
+                    refreshInFlight_ = false;
+                    lastRefreshGeneration_ = snapshot.refreshGeneration;
+                    lastRefreshSucceeded_ = false;
+                    lastRefreshError_ = "client is not authenticated";
+                }
+                completed = true;
+                authLost = true;
             }
-
-            token_ = std::string(wrapped.fields[0]);
-            tokenExpiresAt_ = std::string(wrapped.fields[1]);
-            tokenExpiresAtTime_ = *expiresAt;
-            hasTokenExpiry_ = true;
-            refreshInFlight_ = false;
+            else
+            {
+                token_ = std::string(wrapped.fields[0]);
+                tokenExpiresAt_ = std::string(wrapped.fields[1]);
+                tokenExpiresAtTime_ = *expiresAt;
+                hasTokenExpiry_ = true;
+                refreshInFlight_ = false;
+                lastRefreshGeneration_ = snapshot.refreshGeneration;
+                lastRefreshSucceeded_ = true;
+                wipeString(lastRefreshError_);
+                completed = true;
+            }
         }
-        stateCv_.notify_all();
+        if (completed)
+            stateCv_.notify_all();
+        if (authLost)
+            return Result<void>::fail("client is not authenticated");
         return Result<void>{};
     }
 
@@ -596,6 +648,10 @@ namespace syslocker
             tokenExpiresAtTime_ = {};
             hasTokenExpiry_ = false;
             refreshInFlight_ = false;
+            ++refreshGeneration_;
+            lastRefreshGeneration_ = refreshGeneration_;
+            lastRefreshSucceeded_ = true;
+            wipeString(lastRefreshError_);
         }
         stateCv_.notify_all();
     }

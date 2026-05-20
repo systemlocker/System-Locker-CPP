@@ -2,7 +2,8 @@
 
 ![System Locker Logo](logo.png)
 
-Welcome to the System Locker C++ Reference implementation, written in C++20.
+Welcome to the [System Locker](https://systemlocker.net) C++ Reference implementation, written in C++20.
+This covers the **Quicksilver**, **Variables**, [Invisible Folder](https://invisiblefolder.net) and **Management/Data** APIs.
 
 It supports two ways to integrate the library into a Visual Studio project:
 
@@ -100,6 +101,19 @@ In your application code, include:
 #include <syslocker/syslocker.hpp>
 ```
 
+### Linux/macOS prerequisites
+
+- CMake 3.20+
+- C++20 compiler (GCC 11+, Clang 14+, or AppleClang 14+)
+- libcurl development package available to CMake (`find_package(CURL)`)
+
+The bundled `third_party/curl/` artifact in this repository is Windows-only.
+Linux/macOS consumers must build or install a platform-native libcurl and
+link against that instead.
+
+On Linux and macOS, the integrity implementation uses `dladdr` and `dl_iterate_phdr`.
+This means that `-ldl` must be used when linking for those systems.
+
 ### Important notes
 
 - Source-embed mode still depends on libcurl.
@@ -172,5 +186,57 @@ int main()
     std::cout << "[if] downloaded bytes: " << bytes->size() << '\n';
 
     return 0;
+}
+```
+
+## Invisible Folder downloads
+
+Invisible Folder support is exposed through `Client::invisibleFolder()` and
+currently targets the Advanced token-based flow.
+
+- Token refresh endpoint: `POST /auth/quicksilver/init-if` on the System Locker base URL.
+- File download endpoint: `POST /a/{reference_id}` on `Config::invisibleFolderBaseUrl`.
+- The token cache uses `expires_at` with a local 10-second safety buffer.
+- Startup prefetch is optional and best-effort. A prefetch failure is silent
+  and does not fail Quicksilver authentication; the first download will request
+  a fresh Invisible Folder token on demand.
+- If Invisible Folder rejects a cached token during download, the client clears
+  that token, requests one replacement, and retries the download once.
+
+Enable startup prefetch at authentication time:
+
+```cpp
+syslocker::AuthenticationOptions opts;
+opts.prefetchInvisibleFolderToken = true;
+
+auto auth = client.authenticateWithPassword("alice", "hunter2", opts);
+if (!auth) {
+  std::cerr << auth.error() << '\n';
+  return 1;
+}
+```
+
+Download into memory:
+
+```cpp
+auto bytes = client.invisibleFolder().download("your_reference_id");
+if (!bytes) {
+  std::cerr << bytes.error() << '\n';
+  return 1;
+}
+
+// bytes is std::vector<std::uint8_t>
+std::cout << "downloaded " << bytes->size() << " bytes\n";
+```
+
+Download directly to disk (overwrites existing file):
+
+```cpp
+auto saved = client.invisibleFolder().downloadToFile(
+  "your_reference_id",
+  "C:/path/to/output.bin");
+if (!saved) {
+  std::cerr << saved.error() << '\n';
+  return 1;
 }
 ```

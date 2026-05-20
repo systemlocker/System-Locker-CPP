@@ -43,7 +43,8 @@ namespace syslocker
                            std::string username,
                            bool enableAntiDebug,
                            std::string integrityBaselineSha1,
-                           std::size_t integrityCodeSize);
+                           std::size_t integrityCodeSize,
+                           std::size_t integritySegmentCount = 1);
 
         ~QuicksilverSession();
 
@@ -102,6 +103,7 @@ namespace syslocker
         // Integrity self-check baseline (captured at library init)
         const std::string integrityBaseline_;
         const std::size_t integrityCodeSize_;
+        const std::size_t integritySegmentCount_;
     };
 
 } // namespace syslocker
