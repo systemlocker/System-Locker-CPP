@@ -50,10 +50,15 @@ int main()
     cfg.systemId = "YOUR_SYSTEM_ID";
     cfg.version = "1.0";
     cfg.hwid = hwid; // Set to "bypass" if you are ok with key reuse.
+    // cfg.programDigest = "YOUR_PROGRAM_HASH"; // Optional
     // You may opt to use Free Trial keys instead, which bypass hwid
     // without compromising HWID checks for the rest of your keys.
 
     syslocker::Client client(cfg);
+    client.onHeartbeatFailure([](const syslocker::HeartbeatFailure& failure) {
+        if (failure.beatError == syslocker::BeatError::Terminated)
+            std::cerr << "Session ended: " << failure.terminationReason << '\n';
+    });
     auto result = client.authenticateWithKey("YOUR_LICENSE_KEY");
     if (!result)
     {
@@ -64,6 +69,11 @@ int main()
     return 0;
 }
 ```
+
+When `Config::programDigest` is set, it is sent with Quicksilver auth and
+Invisible Folder token refresh requests. A developer-terminated session is
+reported as `BeatError::Terminated`; `terminationReason` contains the clean
+developer message, while `message` preserves the full server response.
 
 ## Notes
 

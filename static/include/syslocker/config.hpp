@@ -58,6 +58,11 @@ namespace syslocker
         /// uses `baseUrl`; this value is only for `/a/{reference_id}`
         /// downloads.
         std::string invisibleFolderBaseUrl = "https://invisiblefolder.net";
+
+        /// Optional Program Hash digest sent with Quicksilver initialization
+        /// requests. When the system has a Program Hash configured, a supplied
+        /// value must match it exactly.
+        std::optional<std::string> programDigest;
     };
 
 } // namespace syslocker

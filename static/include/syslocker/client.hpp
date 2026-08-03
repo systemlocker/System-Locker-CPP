@@ -54,7 +54,7 @@ namespace syslocker
                                                      std::string_view password,
                                                      AuthenticationOptions options = {});
 
-        /// Key-only Quicksilver flow (POST /quicksilver/init).
+        /// Key-only Quicksilver flow (POST /quicksilver/init-mikros).
         Result<InitSuccess> authenticateWithKey(std::string_view licenseKey,
                                                 AuthenticationOptions options = {});
 

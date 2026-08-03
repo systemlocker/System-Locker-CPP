@@ -279,12 +279,14 @@ namespace syslocker
                                      std::string invisibleFolderBaseUrl,
                                      std::string systemId,
                                      std::string hwid,
-                                     std::function<bool()> sessionActive)
+                                     std::function<bool()> sessionActive,
+                                     std::string programDigest)
         : http_(http),
           systemLockerBaseUrl_(std::move(systemLockerBaseUrl)),
           invisibleFolderBaseUrl_(std::move(invisibleFolderBaseUrl)),
           systemId_(std::move(systemId)),
           hwid_(std::move(hwid)),
+          programDigest_(std::move(programDigest)),
           sessionActive_(std::move(sessionActive))
     {
     }
@@ -420,6 +422,8 @@ namespace syslocker
         }
 
         FormFields form = {{"system", systemId_}, {"hwid", hwid_}};
+        if (!programDigest_.empty())
+            form.emplace_back("digest", programDigest_);
         ScopedFormWipe wipeForm{form};
         std::string expectedIdentity;
         ScopedStringWipe wipeExpectedIdentity{expectedIdentity};

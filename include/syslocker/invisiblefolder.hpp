@@ -27,7 +27,8 @@ namespace syslocker
                         std::string invisibleFolderBaseUrl,
                         std::string systemId,
                         std::string hwid,
-                        std::function<bool()> sessionActive);
+                        std::function<bool()> sessionActive,
+                        std::string programDigest = {});
 
         /// True if a cached Invisible Folder token is present and not within
         /// the local expiry buffer.
@@ -66,6 +67,7 @@ namespace syslocker
         const std::string invisibleFolderBaseUrl_;
         const std::string systemId_;
         const std::string hwid_;
+        const std::string programDigest_;
         std::function<bool()> sessionActive_;
 
         mutable std::mutex stateMtx_;

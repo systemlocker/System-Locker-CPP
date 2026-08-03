@@ -18,7 +18,7 @@ namespace syslocker
     {
 
         constexpr const char *kInitPath = "/auth/quicksilver/init";
-        constexpr const char *kInitMikrosPath = "/auth/quicksilver/init";
+        constexpr const char *kInitMikrosPath = "/quicksilver/init-mikros";
 
         // Quicksilver protocol time bucket: floor(unix_time / 29).
         constexpr std::int64_t kEpochBucketSeconds = 29;
@@ -103,7 +103,8 @@ namespace syslocker
           invisibleFolder_(std::make_unique<InvisibleFolder>(
               *http_, cfg_.baseUrl, cfg_.invisibleFolderBaseUrl, cfg_.systemId, cfg_.hwid,
               [this]
-              { return isAuthenticated(); }))
+              { return isAuthenticated(); },
+              cfg_.programDigest.value_or(std::string{})))
     {
     }
 
@@ -273,7 +274,9 @@ namespace syslocker
             return s;
         }
 
-        return Result<InitSuccess>::fail(std::string(toString(err)) + ": " + body);
+        if (err == InitError::Unknown)
+            return Result<InitSuccess>::fail(std::string(toString(err)) + ": " + body);
+        return Result<InitSuccess>::fail(toString(err));
     }
 
     Result<InitSuccess> Client::authenticateWithPassword(std::string_view username,
@@ -288,6 +291,8 @@ namespace syslocker
             {"version", cfg_.version},
             {"beatrate", std::to_string(cfg_.beatRate.count())},
         };
+        if (cfg_.programDigest)
+            fields.emplace_back("digest", *cfg_.programDigest);
         auto r = doInit(kInitPath, std::string(username), fields);
         if (!r.ok())
             return r;
@@ -309,6 +314,8 @@ namespace syslocker
             {"version", cfg_.version},
             {"beatrate", std::to_string(cfg_.beatRate.count())},
         };
+        if (cfg_.programDigest)
+            fields.emplace_back("digest", *cfg_.programDigest);
         auto r = doInit(kInitMikrosPath, std::string(licenseKey), fields);
         if (!r.ok())
             return r;

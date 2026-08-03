@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 namespace syslocker
 {
@@ -29,6 +30,17 @@ namespace syslocker
         UsernameMismatch,  ///< server's username didn't match request
         TimestampMismatch, ///< response timestamp drift exceeded tolerance
         Unknown,
+
+        // New wire values are appended to preserve existing enum ordinals.
+        NoKey,                  ///< "no key"
+        BadKey,                 ///< "bad key"
+        Paused,                 ///< "paused"
+        Banned,                 ///< "banned"
+        HwidBanned,             ///< "hwid banned"
+        DeveloperPlanInactive, ///< "destitute"
+        NoProductionAccess,    ///< "no production"
+        UserLimit,              ///< "user limit"
+        DigestMismatch,         ///< "digest"
     };
 
     /// Documented Quicksilver heartbeat errors.
@@ -43,6 +55,7 @@ namespace syslocker
         Transport,       ///< network / TLS / non-2xx
         TamperDetected,  ///< local debugger / spoof detection tripped
         Unknown,
+        Terminated,      ///< "terminated [developer-provided reason]"
     };
 
     /// Reason a heartbeat failure hook was invoked.
@@ -56,9 +69,10 @@ namespace syslocker
     struct HeartbeatFailure
     {
         HeartbeatFailureCode code;
-        BeatError beatError;      ///< populated when code == BeatRejected
-        std::string message;      ///< raw server response or diagnostic text
-        std::uint64_t beatNumber; ///< how many heartbeats had succeeded
+        BeatError beatError;             ///< populated when code == BeatRejected
+        std::string message;             ///< raw server response or diagnostic text
+        std::uint64_t beatNumber;        ///< how many heartbeats had succeeded
+        std::string terminationReason;   ///< developer reason without the "terminated " prefix
     };
 
     const char *toString(InitError) noexcept;

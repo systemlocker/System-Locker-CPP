@@ -85,6 +85,16 @@ namespace syslocker
                 std::move(msg),
                 beats_.load(std::memory_order_relaxed),
             };
+            if (be == BeatError::Terminated)
+            {
+                constexpr std::string_view prefix = "terminated ";
+                const auto raw = std::string_view(f.message);
+                if (raw.size() >= prefix.size() &&
+                    detail::toLowerCopy(raw.substr(0, prefix.size())) == prefix)
+                {
+                    f.terminationReason = std::string(raw.substr(prefix.size()));
+                }
+            }
             // Defensively swallow exceptions from the user hook so we never
             // tear down the heartbeat thread with a live exception.
             try

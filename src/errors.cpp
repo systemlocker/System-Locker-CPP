@@ -19,16 +19,25 @@ namespace syslocker
         constexpr InitMap kInit[] = {
             {"false", InitError::MissingField},
             {"no u/p", InitError::NoUserPass},
+            {"no key", InitError::NoKey},
             {"no sys", InitError::NoSystem},
             {"dbe", InitError::DatabaseError},
             {"not verified", InitError::NotVerified},
             {"bad u/p", InitError::BadCredentials},
+            {"bad key", InitError::BadKey},
             {"bad keys", InitError::BadKeys},
+            {"paused", InitError::Paused},
             {"frozen", InitError::Frozen},
+            {"banned", InitError::Banned},
+            {"hwid banned", InitError::HwidBanned},
             {"spoofsuspected", InitError::SpoofSuspected},
+            {"destitute", InitError::DeveloperPlanInactive},
+            {"no production", InitError::NoProductionAccess},
+            {"user limit", InitError::UserLimit},
             {"expired key", InitError::ExpiredKey},
             {"hwid", InitError::HwidMismatch},
             {"outdated", InitError::Outdated},
+            {"digest", InitError::DigestMismatch},
         };
 
         struct BeatMap
@@ -52,45 +61,63 @@ namespace syslocker
         switch (e)
         {
         case InitError::None:
-            return "ok";
+            return "Authentication succeeded";
         case InitError::MissingField:
-            return "missing field";
+            return "Required authentication information is missing";
         case InitError::NoUserPass:
-            return "no username or password";
+            return "A username and password are required";
+        case InitError::NoKey:
+            return "A license key is required";
         case InitError::NoSystem:
-            return "no system id";
+            return "A System Locker system ID is required";
         case InitError::DatabaseError:
-            return "server database error";
+            return "System Locker could not complete authentication";
         case InitError::NotVerified:
-            return "account not verified";
+            return "The email for this account must be verified before signing in";
         case InitError::BadCredentials:
-            return "bad credentials";
+            return "The username or password is incorrect";
+        case InitError::BadKey:
+            return "This license key is invalid for the selected system";
         case InitError::BadKeys:
-            return "no key for this system";
+            return "This account does not have a valid key for this system";
+        case InitError::Paused:
+            return "This system is currently paused by its creator";
         case InitError::Frozen:
-            return "key is frozen";
+            return "This license key has been frozen";
+        case InitError::Banned:
+            return "This device was blocked by the application creator";
+        case InitError::HwidBanned:
+            return "This device was blocked by the application creator";
         case InitError::SpoofSuspected:
-            return "hwid is suspected of being spoofed";
+            return "This device was blocked by the application creator";
+        case InitError::DeveloperPlanInactive:
+            return "Authentication is unavailable; please contact the application creator";
+        case InitError::NoProductionAccess:
+            return "This system is not enabled for production authentication";
+        case InitError::UserLimit:
+            return "This system has reached its active-user limit; please contact the application creator";
         case InitError::ExpiredKey:
-            return "expired key";
+            return "This license key has expired";
         case InitError::HwidMismatch:
-            return "hwid mismatch";
+            return "This license key is registered to a different device";
         case InitError::Outdated:
-            return "client outdated";
+            return "This application version is no longer supported";
+        case InitError::DigestMismatch:
+            return "The application integrity check did not match";
         case InitError::BadBeatRate:
-            return "beat rate out of range";
+            return "The requested heartbeat interval is outside the allowed range";
         case InitError::Transport:
-            return "transport error";
+            return "System Locker could not be reached";
         case InitError::HashMismatch:
-            return "response hash mismatch";
+            return "The authentication response failed its integrity check";
         case InitError::UsernameMismatch:
-            return "username mismatch in response";
+            return "Invalid indentification";
         case InitError::TimestampMismatch:
-            return "timestamp mismatch in response";
+            return "A critical error occurred and the application could not be authenticated; please restart the application and try again";
         case InitError::Unknown:
-            return "unknown response";
+            return "System Locker returned an unrecognized authentication response";
         }
-        return "unknown";
+        return "Authentication failed for an unknown reason";
     }
 
     const char *toString(BeatError e) noexcept
@@ -98,25 +125,27 @@ namespace syslocker
         switch (e)
         {
         case BeatError::None:
-            return "ok";
+            return "Heartbeat accepted";
         case BeatError::BadRequest:
-            return "bad request";
+            return "The heartbeat request is missing required information";
         case BeatError::BadSessionToken:
-            return "bad session token";
+            return "The authentication session is no longer valid";
         case BeatError::StaleToken:
-            return "stale token";
+            return "The authentication session expired after a missed heartbeat";
+        case BeatError::Terminated:
+            return "The developer ended this authentication session";
         case BeatError::RateLimit:
-            return "rate limit";
+            return "The heartbeat was sent too soon";
         case BeatError::ExpiredKey:
-            return "expired key";
+            return "The license key expired during this session";
         case BeatError::Transport:
-            return "transport error";
+            return "System Locker could not be reached for the heartbeat";
         case BeatError::TamperDetected:
-            return "tamper detected";
+            return "The application integrity check detected tampering";
         case BeatError::Unknown:
-            return "unknown response";
+            return "System Locker returned an unrecognized heartbeat response";
         }
-        return "unknown";
+        return "The heartbeat failed for an unknown reason";
     }
 
     const char *toString(HeartbeatFailureCode c) noexcept
@@ -124,13 +153,13 @@ namespace syslocker
         switch (c)
         {
         case HeartbeatFailureCode::BeatRejected:
-            return "beat rejected";
+            return "The heartbeat was rejected by System Locker";
         case HeartbeatFailureCode::Transport:
-            return "transport error";
+            return "The heartbeat could not reach System Locker";
         case HeartbeatFailureCode::TamperDetected:
-            return "tamper detected";
+            return "The application integrity check detected tampering";
         }
-        return "unknown";
+        return "The heartbeat failed for an unknown reason";
     }
 
     InitError parseInitError(std::string_view body) noexcept
@@ -165,6 +194,8 @@ namespace syslocker
             return BeatError::None;
 
         auto lower = detail::toLowerCopy(trimmed);
+        if (detail::startsWith(lower, "terminated ") || lower == "terminated")
+            return BeatError::Terminated;
         for (const auto &[wire, code] : kBeat)
         {
             if (lower == wire)
