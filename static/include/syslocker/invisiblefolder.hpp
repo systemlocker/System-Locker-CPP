@@ -30,12 +30,12 @@ namespace syslocker
                         std::function<bool()> sessionActive,
                         std::string programDigest = {});
 
-        /// True if a cached Invisible Folder token is present and not within
-        /// the local expiry buffer.
+        /// True if a cached Invisible Folder token is present. A rejected token is refreshed
+        /// from the next scheduled Bedrock heartbeat.
         bool hasValidToken() const;
 
         /// Ensure a valid Invisible Folder token exists, refreshing it from
-        /// System Locker when needed.
+        /// the next scheduled Bedrock heartbeat when needed.
         Result<void> ensureToken();
 
         /// Download a protected file into memory.
@@ -49,42 +49,20 @@ namespace syslocker
     private:
         friend class Client;
 
-        enum class AuthMode
-        {
-            None,
-            Password,
-            Key,
-        };
-
-        void setPasswordAuth(std::string_view username, std::string_view password);
-        void setKeyAuth(std::string_view licenseKey);
         void cacheToken(std::string_view token, std::string_view expiresAt);
         void clearCachedToken() noexcept;
         void clearSessionState() noexcept;
 
         IHttpClient &http_;
-        const std::string systemLockerBaseUrl_;
         const std::string invisibleFolderBaseUrl_;
-        const std::string systemId_;
-        const std::string hwid_;
-        const std::string programDigest_;
         std::function<bool()> sessionActive_;
+        std::function<Result<std::string>()> fetchToken_;
 
         mutable std::mutex stateMtx_;
-        AuthMode authMode_ = AuthMode::None;
-        std::string username_;
-        std::string password_;
-        std::string licenseKey_;
         std::string token_;
-        std::string tokenExpiresAt_;
-        std::chrono::system_clock::time_point tokenExpiresAtTime_{};
-        bool hasTokenExpiry_ = false;
         bool refreshInFlight_ = false;
-        std::uint64_t refreshGeneration_ = 0;
-        std::uint64_t lastRefreshGeneration_ = 0;
-        bool lastRefreshSucceeded_ = true;
-        std::string lastRefreshError_;
         std::uint64_t stateVersion_ = 0;
+        std::string lastRefreshError_;
         std::condition_variable stateCv_;
     };
 

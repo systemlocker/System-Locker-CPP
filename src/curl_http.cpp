@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <limits>
 
 namespace syslocker
 {
@@ -25,12 +26,37 @@ namespace syslocker
                            });
         }
 
+        struct WriteState
+        {
+            std::string &body;
+            std::size_t maximum;
+        };
+
         std::size_t writeCb(char *ptr, std::size_t size, std::size_t nmemb, void *userdata)
         {
-            auto *out = static_cast<std::string *>(userdata);
+            auto &out = *static_cast<WriteState *>(userdata);
+            if (size && nmemb > (std::numeric_limits<std::size_t>::max)() / size)
+                return 0;
             const std::size_t bytes = size * nmemb;
-            out->append(ptr, bytes);
+            if (bytes > out.maximum || out.body.size() > out.maximum - bytes)
+                return 0;
+            try { out.body.append(ptr, bytes); }
+            catch (...) { return 0; }
             return bytes;
+        }
+
+        std::size_t headerCb(char *ptr, std::size_t size, std::size_t nmemb, void *userdata)
+        {
+            auto &response = *static_cast<HttpResponse *>(userdata);
+            const std::string_view line(ptr, size * nmemb);
+            // A proxy may send an intermediate CONNECT/header block.
+            if (detail::startsWith(line, "HTTP/"))
+                response.headers.clear();
+            const auto colon = line.find(':');
+            if (colon != std::string_view::npos)
+                response.headers[detail::toLowerCopy(detail::trim(line.substr(0, colon)))] =
+                    std::string(detail::trim(line.substr(colon + 1)));
+            return size * nmemb;
         }
 
         class CurlHttpClient final : public IHttpClient
@@ -42,6 +68,14 @@ namespace syslocker
             }
 
             HttpResponse post(std::string_view url, const FormFields &form) override
+            {
+                return request("POST", url, detail::encodeForm(form),
+                               {{"Content-Type", "application/x-www-form-urlencoded"},
+                                {"Accept", "text/plain, */*"}});
+            }
+
+            HttpResponse request(std::string_view method, std::string_view url,
+                                 std::string_view requestBody, const HttpHeaders &requestHeaders) override
             {
                 HttpResponse resp;
 
@@ -58,19 +92,31 @@ namespace syslocker
                     return resp;
                 }
 
-                const std::string body = detail::encodeForm(form);
+                const std::string body(requestBody);
+                const std::string verb(method);
                 const std::string urlStr(url);
+                // Auth and management envelopes are bounded before parsing.
+                // File bytes retain the legacy in-memory download behavior.
+                bool download = false;
+                for (const auto &[name, value] : requestHeaders)
+                    if (name == "X-Invisiblefolder-Download" && value == "1") download = true;
+                WriteState writeState{resp.body, download ? (std::numeric_limits<std::size_t>::max)() : 1024 * 1024};
 
                 ::curl_easy_setopt(curl, CURLOPT_URL, urlStr.c_str());
-                ::curl_easy_setopt(curl, CURLOPT_POST, 1L);
-                ::curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
-                ::curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+                if (verb != "GET")
+                {
+                    ::curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
+                    ::curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+                }
+                ::curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verb.c_str());
                 ::curl_easy_setopt(curl, CURLOPT_USERAGENT, opts_.userAgent.c_str());
                 ::curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(opts_.timeout.count()));
                 ::curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
                 ::curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
                 ::curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
-                ::curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp.body);
+                ::curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeState);
+                ::curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
+                ::curl_easy_setopt(curl, CURLOPT_HEADERDATA, &resp);
 
                 // Strict TLS settings — defend against TLS-MITM proxies and
                 // attackers who might attempt to replace systemlocker.net with a
@@ -87,8 +133,18 @@ namespace syslocker
                 }
 
                 struct curl_slist *headers = nullptr;
-                headers = ::curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
-                headers = ::curl_slist_append(headers, "Accept: text/plain, */*");
+                for (const auto &[name, value] : requestHeaders)
+                {
+                    if (name.find_first_of("\r\n") != std::string::npos ||
+                        value.find_first_of("\r\n") != std::string::npos)
+                    {
+                        resp.error = "invalid HTTP header";
+                        ::curl_slist_free_all(headers);
+                        ::curl_easy_cleanup(curl);
+                        return resp;
+                    }
+                    headers = ::curl_slist_append(headers, (name + ": " + value).c_str());
+                }
                 // Refuse cleartext fallbacks at the protocol level too.
                 ::curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 

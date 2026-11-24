@@ -2,7 +2,7 @@
 
 #include "integrity.hpp"
 #include "security.hpp"
-#include "sha1.hpp"
+#include "bedrock_crypto.hpp"
 #include "util.hpp"
 
 #include <chrono>
@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <algorithm>
+#include <stdexcept>
 
 namespace syslocker
 {
@@ -17,68 +19,20 @@ namespace syslocker
     namespace
     {
 
-        constexpr const char *kInitPath = "/auth/quicksilver/init";
-        constexpr const char *kInitMikrosPath = "/quicksilver/init-mikros";
+        constexpr const char *kInitPath = "/auth/bedrock/init";
+        constexpr const char *kInitMikrosPath = kInitPath;
 
-        // Quicksilver protocol time bucket: floor(unix_time / 29).
-        constexpr std::int64_t kEpochBucketSeconds = 29;
-
-        bool validBeatRate(std::chrono::seconds s) noexcept
+        Config normalize(Config cfg)
         {
-            return s.count() >= 25 && s.count() <= 3600;
+            for (auto *url : {&cfg.baseUrl, &cfg.invisibleFolderBaseUrl})
+                while (!url->empty() && url->back() == '/') url->pop_back();
+            return cfg;
         }
 
-        std::int64_t bucketedNow()
+        std::unique_ptr<IHttpClient> requireHttp(std::unique_ptr<IHttpClient> http)
         {
-            using namespace std::chrono;
-            const auto secondsSinceEpoch = duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
-            return static_cast<std::int64_t>(secondsSinceEpoch / kEpochBucketSeconds);
-        }
-
-        bool eqIgnoreCase(std::string_view a, std::string_view b)
-        {
-            if (a.size() != b.size())
-                return false;
-            for (std::size_t i = 0; i < a.size(); ++i)
-            {
-                unsigned char ca = static_cast<unsigned char>(a[i]);
-                unsigned char cb = static_cast<unsigned char>(b[i]);
-                if (std::tolower(ca) != std::tolower(cb))
-                    return false;
-            }
-            return true;
-        }
-
-        struct Wrapped
-        {
-            bool ok = false;
-            std::string_view var1;
-            std::string_view username;
-            std::string_view timestamp;
-        };
-
-        Wrapped parseWrapped(std::string_view body)
-        {
-            Wrapped w;
-            auto colon = body.rfind(':');
-            if (colon == std::string_view::npos)
-                return w;
-            auto payload = body.substr(0, colon);
-            auto hash = detail::trim(body.substr(colon + 1));
-            auto computed = detail::Sha1::hex(payload);
-            if (!eqIgnoreCase(computed, hash))
-                return w;
-            auto firstBar = payload.find('|');
-            if (firstBar == std::string_view::npos)
-                return w;
-            auto secondBar = payload.find('|', firstBar + 1);
-            if (secondBar == std::string_view::npos)
-                return w;
-            w.ok = true;
-            w.var1 = payload.substr(0, firstBar);
-            w.username = payload.substr(firstBar + 1, secondBar - firstBar - 1);
-            w.timestamp = payload.substr(secondBar + 1);
-            return w;
+            if (!http) throw std::invalid_argument("HTTP client is required");
+            return http;
         }
 
         CurlHttpOptions optionsFrom(const Config &cfg)
@@ -96,16 +50,23 @@ namespace syslocker
         : Client(cfg, makeCurlHttpClient(optionsFrom(cfg))) {}
 
     Client::Client(Config cfg, std::unique_ptr<IHttpClient> http)
-        : cfg_(std::move(cfg)),
-          http_(std::move(http)),
+        : cfg_(normalize(std::move(cfg))),
+          http_(requireHttp(std::move(http))),
           variables_(std::make_unique<Variables>(*http_, cfg_.baseUrl, cfg_.systemId)),
-          management_(std::make_unique<Management>(*http_, cfg_.baseUrl, cfg_.apiKey)),
+          management_(std::make_unique<Management>(*http_, cfg_.baseUrl, cfg_.apiKey, cfg_.systemId)),
           invisibleFolder_(std::make_unique<InvisibleFolder>(
               *http_, cfg_.baseUrl, cfg_.invisibleFolderBaseUrl, cfg_.systemId, cfg_.hwid,
               [this]
               { return isAuthenticated(); },
               cfg_.programDigest.value_or(std::string{})))
     {
+        invisibleFolder_->fetchToken_ = [this]() -> Result<std::string>
+        {
+            auto current = session();
+            if (!current || !current->isAlive())
+                return Result<std::string>::fail("client is not authenticated");
+            return current->nextInvisibleFolderToken();
+        };
     }
 
     Client::~Client() { shutdown(); }
@@ -113,9 +74,9 @@ namespace syslocker
     void Client::onHeartbeatFailure(HeartbeatFailureHook hook)
     {
         pendingHook_ = hook;
-        if (session_)
+        if (auto current = session())
         {
-            session_->onFailure([this, hook = std::move(hook)](const HeartbeatFailure &failure)
+            current->onFailure([this, hook = std::move(hook)](const HeartbeatFailure &failure)
                                 {
                                     invisibleFolder_->clearSessionState();
                                     if (hook)
@@ -125,17 +86,20 @@ namespace syslocker
 
     bool Client::isAuthenticated() const noexcept
     {
-        return session_ && session_->isAlive();
+        const auto current = session();
+        return current && current->isAlive();
     }
 
     std::uint64_t Client::heartbeatCount() const noexcept
     {
-        return session_ ? session_->beatCount() : 0;
+        const auto current = session();
+        return current ? current->beatCount() : 0;
     }
 
     std::string Client::identity() const
     {
-        return session_ ? session_->identity() : std::string{};
+        const auto current = session();
+        return current ? current->identity() : std::string{};
     }
 
     std::string Client::username() const
@@ -145,10 +109,25 @@ namespace syslocker
 
     void Client::shutdown() noexcept
     {
-        if (session_)
-            session_->stop();
-        session_.reset();
+        std::shared_ptr<QuicksilverSession> previous;
+        {
+            std::lock_guard<std::mutex> lock(sessionMtx_);
+            previous = std::move(session_);
+        }
+        if (previous)
+        {
+            previous->stop();
+            // A download can retain the session while awaiting its next token.
+            // Finish the worker before any callback-owned Client state is freed.
+            if (previous->thread_.joinable()) previous->thread_.join();
+        }
         invisibleFolder_->clearSessionState();
+    }
+
+    std::shared_ptr<QuicksilverSession> Client::session() const
+    {
+        std::lock_guard<std::mutex> lock(sessionMtx_);
+        return session_;
     }
 
     Variables &Client::variables() { return *variables_; }
@@ -165,118 +144,76 @@ namespace syslocker
                 return Result<InitSuccess>::fail("debugger detected");
             }
         }
-        if (cfg_.systemId.empty())
-        {
-            return Result<InitSuccess>::fail("Config::systemId is required");
-        }
-        if (!validBeatRate(cfg_.beatRate))
-        {
+        const auto alphanumeric = [](unsigned char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        };
+        if (cfg_.systemId.size() != 20 || !std::all_of(cfg_.systemId.begin(), cfg_.systemId.end(), alphanumeric))
+            return Result<InitSuccess>::fail("Config::systemId must be 20 alphanumeric characters");
+        if (cfg_.beatRate.count() < 25 || cfg_.beatRate.count() > 3600)
             return Result<InitSuccess>::fail("Config::beatRate must be in [25, 3600]");
-        }
+        if (!detail::startsWith(cfg_.baseUrl, "https://") ||
+            !detail::startsWith(cfg_.invisibleFolderBaseUrl, "https://"))
+            return Result<InitSuccess>::fail("API base URLs must use HTTPS");
+        const auto key = legacy_bedrock::detail::base64UrlDecode(cfg_.signingPublicKey);
+        if (!key || key->size() != 32)
+            return Result<InitSuccess>::fail("Config::signingPublicKey must be the base64url raw 32-byte Bedrock Ed25519 public key");
+        if (identifier.empty())
+            return Result<InitSuccess>::fail("authentication identity is required");
+        for (const auto &[name, value] : fields)
+            if (name == "password" && value.empty())
+                return Result<InitSuccess>::fail("password is required");
 
-        const auto resp = http_->post(std::string(cfg_.baseUrl) + std::string(path), fields);
+        shutdown();
+        auto challenge = legacy_bedrock::detail::generateChallenge();
+        if (!challenge) return Result<InitSuccess>::fail(challenge.error().message);
+        auto form = fields;
+        form.emplace_back("challenge", *challenge);
+        const auto resp = http_->post(cfg_.baseUrl + std::string(path), form);
         if (!resp.ok())
+            return Result<InitSuccess>::fail(resp.error.empty() ? "http " + std::to_string(resp.status) : resp.error);
+        auto verified = legacy_bedrock::detail::verifySignedResponse(cfg_, resp, *challenge);
+        if (!verified) return Result<InitSuccess>::fail(verified.error().message);
+        if (!verified->authed && (!verified->variables.empty() || verified->invisibleFolderToken))
+            return Result<InitSuccess>::fail("Rejected Bedrock initialization included protected data");
+        if (!verified->authed)
         {
-            return Result<InitSuccess>::fail(
-                resp.error.empty() ? ("http " + std::to_string(resp.status)) : resp.error);
+            // Preserve the legacy string error channel while retaining codes
+            // and SSO guidance that older enums cannot describe.
+            std::string message = verified->responseCode + ": " + verified->humanResponse;
+            if (verified->ssoUrl) message += " " + *verified->ssoUrl;
+            return Result<InitSuccess>::fail(std::move(message));
         }
+        const bool keyAuth = std::any_of(fields.begin(), fields.end(), [](const auto &f) { return f.first == "key"; });
+        const auto identityHash = legacy_bedrock::detail::sha256Hex(identifier);
+        const auto &serverHash = keyAuth ? verified->licenseKeyHash : verified->usernameHash;
+        if (!identityHash || !serverHash || *serverHash != *identityHash ||
+            !verified->sessionToken || !detail::startsWith(*verified->sessionToken, "BRK_") ||
+            verified->sessionToken->size() <= 4)
+            return Result<InitSuccess>::fail("Bedrock initialization identity or session token is invalid");
 
-        const auto body = std::string(detail::trim(resp.body));
-
-        auto w = parseWrapped(body);
-        std::string_view var1View;
-        std::string serverIdentity; // username for account auth, key for key-only auth
-        std::int64_t serverTs = 0;
-        bool wrapped = false;
-
-        if (w.ok)
+        // Keep the original result shape: identity comes from the credential
+        // whose hash was verified; the old 29-second bucket is derived locally.
+        InitSuccess success{*verified->sessionToken, std::move(identifier), verified->serverTime / 29};
+        detail::IntegrityBaseline baseline;
+        std::string integrityError;
+        (void)detail::integrityCapture(baseline, integrityError);
+        const bool requestIfToken = std::any_of(fields.begin(), fields.end(), [](const auto &f) { return f.first == "init-if"; });
+        auto current = std::make_shared<QuicksilverSession>(
+            *http_, cfg_.baseUrl, cfg_.systemId, cfg_.beatRate,
+            success.token, success.username, cfg_.enableAntiDebug,
+            std::move(baseline.sha1Hex), baseline.codeSize, baseline.segmentCount,
+            cfg_.signingPublicKey, requestIfToken);
+        current->onFailure([this, hook = pendingHook_](const HeartbeatFailure &failure) {
+            invisibleFolder_->clearSessionState();
+            if (hook) hook(failure);
+        });
         {
-            wrapped = true;
-            var1View = w.var1;
-            serverIdentity = std::string(w.username);
-            try
-            {
-                serverTs = std::stoll(std::string(w.timestamp));
-            }
-            catch (...)
-            {
-                return Result<InitSuccess>::fail("malformed timestamp from server");
-            }
-
-            if (!identifier.empty() && !eqIgnoreCase(serverIdentity, identifier))
-            {
-                return Result<InitSuccess>::fail("request tampering detected");
-            }
+            std::lock_guard<std::mutex> lock(sessionMtx_);
+            session_ = std::move(current);
         }
-        else
-        {
-            if (body.find(':') != std::string::npos)
-            {
-                return Result<InitSuccess>::fail("response failed sha1 integrity check");
-            }
-            var1View = body;
-        }
-
-        const InitError err = parseInitError(var1View);
-        if (err == InitError::None)
-        {
-            if (!wrapped)
-            {
-                return Result<InitSuccess>::fail(
-                    "server returned token without the wrapped username|timestamp:hash envelope");
-            }
-            for (const auto &[k, v] : fields)
-            {
-                if (k == "username")
-                {
-                    if (!eqIgnoreCase(serverIdentity, v))
-                    {
-                        return Result<InitSuccess>::fail(
-                            "server returned a different username than was requested");
-                    }
-                    break;
-                }
-            }
-            const auto local = bucketedNow();
-            if (std::abs(local - serverTs) > 1)
-            {
-                return Result<InitSuccess>::fail("server timestamp drift exceeds tolerance");
-            }
-            InitSuccess s{std::string(var1View), std::move(serverIdentity), serverTs};
-
-            // Capture a hash of our own code section so the heartbeat
-            // can detect runtime patching (e.g. WriteProcessMemory).
-            std::string integritySha1;
-            std::size_t integritySize = 0;
-            std::size_t integritySegmentCount = 0;
-            {
-                detail::IntegrityBaseline bl;
-                std::string integrityError;
-                if (detail::integrityCapture(bl, integrityError))
-                {
-                    integritySha1 = std::move(bl.sha1Hex);
-                    integritySize = bl.codeSize;
-                    integritySegmentCount = bl.segmentCount;
-                }
-                // If capture fails (unsupported platform), we proceed
-                // without integrity checks rather than blocking auth.
-            }
-
-            session_ = std::make_unique<QuicksilverSession>(
-                *http_, cfg_.baseUrl, cfg_.systemId, cfg_.beatRate,
-                s.token, s.username, cfg_.enableAntiDebug,
-                std::move(integritySha1), integritySize, integritySegmentCount);
-            session_->onFailure([this, hook = pendingHook_](const HeartbeatFailure &failure)
-                                {
-                                    invisibleFolder_->clearSessionState();
-                                    if (hook)
-                                        hook(failure); });
-            return s;
-        }
-
-        if (err == InitError::Unknown)
-            return Result<InitSuccess>::fail(std::string(toString(err)) + ": " + body);
-        return Result<InitSuccess>::fail(toString(err));
+        if (verified->invisibleFolderToken)
+            invisibleFolder_->cacheToken(*verified->invisibleFolderToken, {});
+        return success;
     }
 
     Result<InitSuccess> Client::authenticateWithPassword(std::string_view username,
@@ -293,14 +230,12 @@ namespace syslocker
         };
         if (cfg_.programDigest)
             fields.emplace_back("digest", *cfg_.programDigest);
+        if (options.prefetchInvisibleFolderToken)
+            fields.emplace_back("init-if", "true");
         auto r = doInit(kInitPath, std::string(username), fields);
         if (!r.ok())
             return r;
 
-        invisibleFolder_->clearSessionState();
-        invisibleFolder_->setPasswordAuth(username, password);
-        if (options.prefetchInvisibleFolderToken)
-            (void)invisibleFolder_->ensureToken();
         return r;
     }
 
@@ -316,14 +251,12 @@ namespace syslocker
         };
         if (cfg_.programDigest)
             fields.emplace_back("digest", *cfg_.programDigest);
+        if (options.prefetchInvisibleFolderToken)
+            fields.emplace_back("init-if", "true");
         auto r = doInit(kInitMikrosPath, std::string(licenseKey), fields);
         if (!r.ok())
             return r;
 
-        invisibleFolder_->clearSessionState();
-        invisibleFolder_->setKeyAuth(licenseKey);
-        if (options.prefetchInvisibleFolderToken)
-            (void)invisibleFolder_->ensureToken();
         return r;
     }
 

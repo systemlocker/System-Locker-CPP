@@ -9,10 +9,8 @@ namespace syslocker::detail
 {
 
     /// Streaming SHA-1 (Steve Reid, public domain — re-implemented in modern
-    /// C++). NOT cryptographically suitable for new designs, but the System
-    /// Locker Quicksilver protocol uses SHA-1 for response integrity, so we
-    /// need a working implementation. Constant-time properties are NOT
-    /// required here.
+    /// C++). Retained only for the existing local code-page checksum.
+    /// Bedrock response authentication uses Ed25519, not this checksum.
     class Sha1
     {
     public:

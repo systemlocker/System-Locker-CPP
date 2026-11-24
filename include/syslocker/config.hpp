@@ -12,15 +12,15 @@ namespace syslocker
     /// session.
     struct Config
     {
-        /// Hexadecimal system identifier from the System Locker dashboard.
+        /// 20-character alphanumeric system identifier from the System Locker dashboard.
         std::string systemId;
 
         /// Version string. Default of "bypass" disables version checking on
-        /// Quicksilver, which is the documented recommendation. Set to a real
+        /// Bedrock. Set to a real
         /// version string to enforce.
         std::string version = "bypass";
 
-        /// Hardware identifier. Use "1" (or any fixed value) to disable device
+        /// Hardware identifier. Use "1" to disable device
         /// locking entirely.
         std::string hwid = "1";
 
@@ -38,7 +38,7 @@ namespace syslocker
         std::optional<std::string> pinnedPublicKeySha256Base64;
 
         /// User-Agent string sent with every request.
-        std::string userAgent = "syslocker-cpp/1.0";
+        std::string userAgent = "syslocker-cpp/2.0.0";
 
         /// When true (default) the heartbeat thread will check for attached
         /// debuggers each beat. Detection terminates the session and fires
@@ -50,8 +50,8 @@ namespace syslocker
         std::string apiKey;
 
         /// Override the API base URL. Defaults to https://systemlocker.net.
-        /// Useful for testing against staging environments. Plain http:// is
-        /// rejected unless you also disable strict TLS via a custom HTTP client.
+        /// Useful for staging environments. HTTPS is required, including
+        /// when a custom HTTP client is supplied.
         std::string baseUrl = "https://systemlocker.net";
 
         /// Override the Invisible Folder download base URL. Token init still
@@ -59,10 +59,15 @@ namespace syslocker
         /// downloads.
         std::string invisibleFolderBaseUrl = "https://invisiblefolder.net";
 
-        /// Optional Program Hash digest sent with Quicksilver initialization
+        /// Optional Program Hash digest sent with Bedrock initialization
         /// requests. When the system has a Program Hash configured, a supplied
         /// value must match it exactly.
         std::optional<std::string> programDigest;
+
+        /// Required for authentication: base64url of the raw 32-byte Ed25519
+        /// public signing key from your system's dashboard. This is separate
+        /// from the optional TLS certificate pin above.
+        std::string signingPublicKey;
     };
 
 } // namespace syslocker

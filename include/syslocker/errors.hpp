@@ -1,12 +1,13 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 #include <string_view>
 
 namespace syslocker
 {
 
-    /// Documented Quicksilver init-time errors plus a transport bucket and an
+    /// Legacy Quicksilver vocabulary retained for existing callers, plus an
     /// "unknown" bucket for forward compatibility. Convert to/from the wire
     /// strings via the helpers below.
     enum class InitError
@@ -43,7 +44,7 @@ namespace syslocker
         DigestMismatch,         ///< "digest"
     };
 
-    /// Documented Quicksilver heartbeat errors.
+    /// Legacy heartbeat categories used by the Bedrock compatibility bridge.
     enum class BeatError
     {
         None = 0,

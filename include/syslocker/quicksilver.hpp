@@ -20,16 +20,17 @@ namespace syslocker
     class Client;
     class IHttpClient;
 
-    /// The data returned by a successful Quicksilver init request.
+    /// The data returned by a successful Bedrock init request.
     struct InitSuccess
     {
-        std::string token;          ///< first heartbeat token (begins with "TT")
-        std::string username;       ///< wrapped identity: username for account auth, key for key-only auth
-        std::int64_t serverEpoch29; ///< floor(unix_time / 29) reported by server
+        std::string token;          ///< first heartbeat token (begins with "BRK_")
+        std::string username;       ///< verified identity: username for account auth, key for key-only auth
+        std::int64_t serverEpoch29; ///< floor(unix_time / 29) derived from signed server_time for compatibility
     };
 
     using HeartbeatFailureHook = std::function<void(const HeartbeatFailure &)>;
 
+    /// Legacy class name retained for source compatibility; uses Bedrock.
     /// Holds the live heartbeat state and runs the background heartbeat thread.
     /// Owned by the Client; not constructed directly by user code.
     class QuicksilverSession
@@ -44,7 +45,9 @@ namespace syslocker
                            bool enableAntiDebug,
                            std::string integrityBaselineSha1,
                            std::size_t integrityCodeSize,
-                           std::size_t integritySegmentCount = 1);
+                           std::size_t integritySegmentCount = 1,
+                           std::string signingPublicKey = {},
+                           bool requestInvisibleFolderToken = false);
 
         ~QuicksilverSession();
 
@@ -61,13 +64,12 @@ namespace syslocker
         /// Number of successful heartbeats since authenticate().
         std::uint64_t beatCount() const noexcept { return beats_.load(std::memory_order_relaxed); }
 
-        /// Wrapped identity returned by the server at init time. This is the
+        /// Identity confirmed by its signed hash at init time. This is the
         /// username for account auth and the license key for key-only auth.
         const std::string &identity() const noexcept { return username_; }
 
         /// Compatibility alias for account-auth callers. For key-only auth,
-        /// this returns the license key because that is what Quicksilver
-        /// currently echoes in the wrapped response.
+        /// this returns the license key after Bedrock verifies its SHA-256 identity hash.
         const std::string &username() const noexcept { return username_; }
 
         /// Replace the failure hook. Calling thread is the heartbeat thread,
@@ -76,6 +78,8 @@ namespace syslocker
         void onFailure(HeartbeatFailureHook hook);
 
     private:
+        friend class Client;
+        Result<std::string> nextInvisibleFolderToken();
         void run();
         void fail(HeartbeatFailureCode code, BeatError be, std::string msg);
 
@@ -88,6 +92,11 @@ namespace syslocker
 
         mutable std::mutex tokenMtx_;
         std::string token_;
+        const std::string signingPublicKey_;
+        std::atomic<bool> requestIfToken_{false};
+        std::string ifToken_;
+        std::uint64_t ifGeneration_ = 0;
+        std::condition_variable tokenCv_;
 
         std::mutex hookMtx_;
         HeartbeatFailureHook hook_;

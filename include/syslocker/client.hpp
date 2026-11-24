@@ -49,12 +49,12 @@ namespace syslocker
         /// prior hook.
         void onHeartbeatFailure(HeartbeatFailureHook hook);
 
-        /// Username + password Quicksilver flow (POST /auth/quicksilver/init).
+        /// Username + password Bedrock flow (POST /auth/bedrock/init).
         Result<InitSuccess> authenticateWithPassword(std::string_view username,
                                                      std::string_view password,
                                                      AuthenticationOptions options = {});
 
-        /// Key-only Quicksilver flow (POST /quicksilver/init-mikros).
+        /// Key-only Bedrock flow (POST /auth/bedrock/init).
         Result<InitSuccess> authenticateWithKey(std::string_view licenseKey,
                                                 AuthenticationOptions options = {});
 
@@ -65,13 +65,12 @@ namespace syslocker
         /// How many heartbeats have completed successfully.
         std::uint64_t heartbeatCount() const noexcept;
 
-        /// Wrapped identity confirmed by the server during init. This is the
+        /// Identity confirmed by a signed credential hash during init. This is the
         /// username for account auth and the license key for key-only auth.
         std::string identity() const;
 
         /// Compatibility alias for account-auth callers. For key-only auth,
-        /// this returns the license key because that is what Quicksilver
-        /// currently echoes in the wrapped response.
+        /// this returns the license key after Bedrock verifies its SHA-256 identity hash.
         std::string username() const;
 
         /// Tear down the heartbeat session. Idempotent. Called automatically
@@ -97,7 +96,9 @@ namespace syslocker
         std::unique_ptr<Variables> variables_;
         std::unique_ptr<Management> management_;
         std::unique_ptr<InvisibleFolder> invisibleFolder_;
-        std::unique_ptr<QuicksilverSession> session_;
+        mutable std::mutex sessionMtx_;
+        std::shared_ptr<QuicksilverSession> session_;
+        std::shared_ptr<QuicksilverSession> session() const;
         HeartbeatFailureHook pendingHook_;
     };
 

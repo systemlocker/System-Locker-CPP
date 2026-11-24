@@ -13,12 +13,11 @@ namespace syslocker
 
     class IHttpClient;
 
-    /// Expiration token returned by the management API. The wire value is a
-    /// human-readable string; we expose it raw and also try to surface a
-    /// stable boolean for the common "permanent" / "expired" cases.
+    /// UTC expiration timestamp, or an empty raw value when no date is set.
+    /// An unredeemed duration key has no date yet and is not known permanent.
     struct KeyExpiration
     {
-        std::string raw; ///< unmodified server response
+        std::string raw; ///< expires_at timestamp, empty when null
         bool permanent = false;
     };
 
@@ -32,23 +31,22 @@ namespace syslocker
         OneYear = 5,
     };
 
-    /// Wrapper around the /api/v1 management endpoint.
+    /// Compatibility wrapper around the Management v2 API.
     ///
-    /// All calls require an API key (Config::apiKey). Treat that key as a
+    /// Management calls require an slm_ bearer credential (Config::apiKey). Treat that key as a
     /// secret — Management is intentionally exposed via Client::management() so
     /// the API key only has to live in one place.
     class Management
     {
     public:
-        Management(IHttpClient &http, std::string baseUrl, std::string apiKey);
+        Management(IHttpClient &http, std::string baseUrl, std::string apiKey, std::string systemId = {});
 
         // ---- queries -------------------------------------------------------
 
-        /// Number of redeemed keys for this system.
+        /// Periodically refreshed total of accounts and key-only redemptions.
         Result<std::size_t> redeemedUserCount();
 
-        /// Redemption status of `license` (server returns a human-readable
-        /// string; we forward it).
+        /// Redemption status: "user", "mikros", or "unclaimed".
         Result<std::string> keyStatus(std::string_view license);
 
         /// Expiration date of `license`.
@@ -57,10 +55,9 @@ namespace syslocker
         // ---- actions -------------------------------------------------------
 
         /// Reset HWID for a single key. When `asAdmin` is false the 30-day
-        /// cooldown is enforced.
+        /// self-service cooldown is enforced through /auth.
         Result<std::string> resetHwid(std::string_view license, bool asAdmin = true);
 
-        // TOXIC
         /// Reset HWID for every key in the system. Be careful.
         Result<std::string> resetAllHwids();
 
@@ -73,18 +70,21 @@ namespace syslocker
         /// Permanently delete a key.
         Result<std::string> banKey(std::string_view license);
 
-        /// Adjust a key's expiry. `newExpiry` is a date string the server
-        /// understands (e.g. "2026-12-31"); set it to "0" to make a key
-        /// permanent. `tz` is an IANA timezone such as "America/Chicago".
+        /// Retained for source compatibility. Management v2 cannot set an
+        /// existing key's absolute expiry; always returns a migration error.
         Result<std::string> adjustExpiry(std::string_view license,
                                          std::string_view newExpiry,
                                          std::string_view tz);
-        // TOXIC
 
     private:
+        Result<std::string> request(std::string_view method, std::string_view path, std::string_view body = {});
+        Result<std::string> systemPath();
+        Result<std::string> keyPath(std::string_view license);
+
         IHttpClient &http_;
         std::string baseUrl_;
         std::string apiKey_;
+        std::string systemId_;
     };
 
 } // namespace syslocker

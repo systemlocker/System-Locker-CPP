@@ -4,6 +4,7 @@
 #include "integrity.hpp"
 #include "security.hpp"
 #include "util.hpp"
+#include "bedrock_crypto.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -14,7 +15,7 @@ namespace syslocker
     namespace
     {
 
-        constexpr const char *kBeatPath = "/auth/quicksilver/beat";
+        constexpr const char *kBeatPath = "/auth/bedrock/beat";
         constexpr auto kClockJumpTolerance = std::chrono::seconds(2);
 
     } // namespace
@@ -28,8 +29,10 @@ namespace syslocker
                                            bool enableAntiDebug,
                                            std::string integrityBaselineSha1,
                                            std::size_t integrityCodeSize,
-                                           std::size_t integritySegmentCount)
-        : http_(http), baseUrl_(std::move(baseUrl)), systemId_(std::move(systemId)), beatRate_(beatRate), username_(std::move(username)), antiDebug_(enableAntiDebug), token_(std::move(initialToken)), integrityBaseline_(std::move(integrityBaselineSha1)), integrityCodeSize_(integrityCodeSize), integritySegmentCount_(integritySegmentCount)
+                                           std::size_t integritySegmentCount,
+                                           std::string signingPublicKey,
+                                           bool requestInvisibleFolderToken)
+        : http_(http), baseUrl_(std::move(baseUrl)), systemId_(std::move(systemId)), beatRate_(beatRate), username_(std::move(username)), antiDebug_(enableAntiDebug), token_(std::move(initialToken)), signingPublicKey_(std::move(signingPublicKey)), requestIfToken_(requestInvisibleFolderToken), integrityBaseline_(std::move(integrityBaselineSha1)), integrityCodeSize_(integrityCodeSize), integritySegmentCount_(integritySegmentCount)
     {
         thread_ = std::thread([this]
                               {
@@ -60,7 +63,11 @@ namespace syslocker
             std::lock_guard<std::mutex> lk(cvMtx_);
             cv_.notify_all();
         }
-        alive_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(tokenMtx_);
+            alive_.store(false, std::memory_order_release);
+        }
+        tokenCv_.notify_all();
     }
 
     void QuicksilverSession::onFailure(HeartbeatFailureHook hook)
@@ -71,7 +78,11 @@ namespace syslocker
 
     void QuicksilverSession::fail(HeartbeatFailureCode code, BeatError be, std::string msg)
     {
-        alive_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(tokenMtx_);
+            alive_.store(false, std::memory_order_release);
+        }
+        tokenCv_.notify_all();
         HeartbeatFailureHook copy;
         {
             std::lock_guard<std::mutex> lk(hookMtx_);
@@ -183,37 +194,89 @@ namespace syslocker
                 sentToken = token_;
             }
 
-            const FormFields form = {
-                {"token", sentToken},
-                {"system", systemId_},
+            auto challenge = legacy_bedrock::detail::generateChallenge();
+            if (!challenge)
+            {
+                fail(HeartbeatFailureCode::TamperDetected, BeatError::TamperDetected, challenge.error().message);
+                return;
+            }
+            FormFields form = {
+                {"session_token", sentToken}, {"system", systemId_}, {"challenge", *challenge},
             };
+            const bool requestedIfToken = requestIfToken_.load();
+            if (requestedIfToken)
+                form.emplace_back("init-if", "true");
 
-            const auto resp = http_.post(baseUrl_ + kBeatPath, form);
+            auto resp = http_.post(baseUrl_ + kBeatPath, form);
+            // A lost response may already have rotated the server token. Retry
+            // only transport failures, with the exact same token and challenge.
+            if (!resp.error.empty())
+                resp = http_.post(baseUrl_ + kBeatPath, form);
             if (!resp.ok())
             {
-                fail(HeartbeatFailureCode::Transport,
-                     BeatError::Transport,
-                     resp.error.empty()
-                         ? ("http " + std::to_string(resp.status))
-                         : resp.error);
+                fail(HeartbeatFailureCode::Transport, BeatError::Transport,
+                     resp.error.empty() ? "http " + std::to_string(resp.status) : resp.error);
                 return;
             }
-
-            const auto trimmed = std::string(detail::trim(resp.body));
-            const BeatError be = parseBeatError(trimmed);
-            if (be != BeatError::None)
+            Config config;
+            config.systemId = systemId_;
+            config.signingPublicKey = signingPublicKey_;
+            auto verified = resp.header("x-bedrock-signed") == "false"
+                ? legacy_bedrock::detail::parseUnsignedRevocation(config, resp, *challenge)
+                : legacy_bedrock::detail::verifySignedResponse(config, resp, *challenge);
+            if (!verified)
             {
-                fail(HeartbeatFailureCode::BeatRejected, be, trimmed);
+                fail(HeartbeatFailureCode::TamperDetected, BeatError::TamperDetected, verified.error().message);
                 return;
             }
-
-            // success — rotate the token
+            using Code = legacy_bedrock::ResponseCode;
+            if (verified->code != Code::Ok)
+            {
+                BeatError error = BeatError::Terminated;
+                if (verified->code == Code::InvalidSession) error = BeatError::BadSessionToken;
+                else if (verified->code == Code::StaleSession) error = BeatError::StaleToken;
+                else if (verified->code == Code::HeartbeatTooEarly || verified->code == Code::ConcurrentHeartbeat)
+                    error = BeatError::RateLimit;
+                else if (verified->code == Code::ExpiredKey) error = BeatError::ExpiredKey;
+                const auto message = verified->terminationMessage.value_or(verified->humanResponse);
+                fail(HeartbeatFailureCode::BeatRejected, error,
+                     error == BeatError::Terminated ? "terminated " + message : message);
+                return;
+            }
+            if (!verified->authed || !verified->sessionToken ||
+                !detail::startsWith(*verified->sessionToken, "BRF_") || verified->sessionToken->size() <= 4)
+            {
+                fail(HeartbeatFailureCode::TamperDetected, BeatError::TamperDetected,
+                     "Bedrock heartbeat did not return a rotated session token");
+                return;
+            }
             {
                 std::lock_guard<std::mutex> lk(tokenMtx_);
-                token_ = trimmed;
+                token_ = *verified->sessionToken;
+                if (requestedIfToken)
+                {
+                    ifToken_ = verified->invisibleFolderToken.value_or("");
+                    ++ifGeneration_;
+                }
             }
             beats_.fetch_add(1, std::memory_order_relaxed);
+            tokenCv_.notify_all();
         }
+    }
+
+    Result<std::string> QuicksilverSession::nextInvisibleFolderToken()
+    {
+        std::unique_lock<std::mutex> lock(tokenMtx_);
+        const auto generation = ifGeneration_;
+        requestIfToken_.store(true);
+        // Never send an extra heartbeat: Bedrock rejects early beats. Waiting
+        // here lets concurrent downloads share the next scheduled signed token.
+        tokenCv_.wait(lock, [&] { return ifGeneration_ != generation || !isAlive(); });
+        if (!isAlive())
+            return Result<std::string>::fail("client is not authenticated");
+        if (ifToken_.empty())
+            return Result<std::string>::fail("Bedrock did not return an Invisible Folder token");
+        return ifToken_;
     }
 
 } // namespace syslocker
